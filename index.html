@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Daily Paper Reader Pro</title>
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #38bdf8; --border: #334155; --correct: #22c55e; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 15px; margin: 0; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 600px; padding-bottom: 50px; }
+        .panel { background: var(--card); padding: 20px; border-radius: 16px; border: 1px solid var(--border); margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        h1 { font-size: 1.5rem; text-align: center; color: var(--accent); }
+        label { font-size: 0.8rem; color: #94a3b8; margin-left: 5px; }
+        input, button { width: 100%; padding: 14px; margin: 10px 0; border-radius: 12px; border: 1px solid var(--border); box-sizing: border-box; font-size: 16px; /* スマホでズーム防止 */ }
+        input { background: #0f172a; color: white; }
+        button { background: var(--accent); color: #0f172a; font-weight: bold; cursor: pointer; border: none; transition: transform 0.1s; }
+        button:active { transform: scale(0.98); }
+        .summary-pair { margin-bottom: 18px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; border-left: 4px solid var(--accent); }
+        .summary-en { font-size: 0.85rem; color: #94a3b8; margin-top: 6px; line-height: 1.4; }
+        .quiz-area { background: #1e293b; padding: 20px; border-radius: 16px; margin-top: 20px; border: 2px dashed var(--accent); }
+        .quiz-option { display: block; background: #334155; padding: 15px; margin: 10px 0; border-radius: 10px; cursor: pointer; text-align: left; }
+        .hidden { display: none; }
+        .status-msg { text-align: center; color: var(--accent); font-weight: bold; margin: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Daily Paper Reader</h1>
+    
+    <div class="panel">
+        <label>Gemini API Key</label>
+        <input type="password" id="api-key" placeholder="Enter API Key">
+        <label>興味のあるテーマ</label>
+        <input type="text" id="theme" placeholder="例: 再生医療 腎臓">
+        <button onclick="fetchPaper()">今日の論文を取得</button>
+    </div>
+
+    <div id="status" class="status-msg"></div>
+
+    <div id="paper-content" class="panel hidden"></div>
+    
+    <div id="quiz-container" class="quiz-area hidden">
+        <h3>🧠 理解度チェック</h3>
+        <p id="quiz-question" style="font-weight: bold;"></p>
+        <div id="quiz-options"></div>
+        <div id="quiz-feedback" class="panel hidden" style="margin-top:15px; background: rgba(0,0,0,0.2);"></div>
+    </div>
+</div>
+
+<script>
+    const MODEL = "gemini-3.1-pro-preview";
+
+    window.onload = () => {
+        document.getElementById('api-key').value = localStorage.getItem('g_key') || '';
+        document.getElementById('theme').value = localStorage.getItem('g_theme') || 'AI Machine Learning';
+        const today = new Date().toISOString().split('T')[0];
+        const cache = localStorage.getItem(`cache_${today}`);
+        if (cache) render(JSON.parse(cache));
+    };
+
+    // CORS回避用のプロキシを通すラッパー関数
+    async function proxyFetch(url) {
+        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+        const response = await fetch(proxyUrl);
+        const data = await response.json();
+        return data.contents;
+    }
+
+    async function fetchPaper() {
+        const key = document.getElementById('api-key').value;
+        const theme = document.getElementById('theme').value;
+        if (!key) return alert("Keyを入力してください");
+        
+        localStorage.setItem('g_key', key);
+        localStorage.setItem('g_theme', theme);
+        
+        const status = document.getElementById('status');
+        status.innerText = "🔍 論文を探しています...";
+        
+        try {
+            const isEven = new Date().getDate() % 2 === 0;
+            const paper = isEven ? await searchArxiv(theme) : await searchPubMed(theme);
+            
+            status.innerText = "🤖 Geminiが要約とクイズを作成中...";
+            const aiData = await getAiResponse(key, paper);
+            
+            const fullData = { ...paper, ...aiData, date: new Date().toISOString().split('T')[0] };
+            localStorage.setItem(`cache_${fullData.date}`, JSON.stringify(fullData));
+            render(fullData);
+            status.innerText = "";
+        } catch (e) {
+            status.innerText = "❌ エラー: " + e.message;
+            console.error(e);
+        }
+    }
+
+    async function searchArxiv(q) {
+        const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(q)}&max_results=1`;
+        const xmlText = await proxyFetch(url);
+        const xml = new DOMParser().parseFromString(xmlText, "text/xml");
+        const e = xml.querySelector("entry");
+        if(!e) throw new Error("arXivで論文が見つかりませんでした");
+        return { 
+            title: e.querySelector("title").textContent.replace(/\n/g, ' '), 
+            abstract: e.querySelector("summary").textContent, 
+            url: e.querySelector("id").textContent, 
+            source: "arXiv (AI/ML)" 
+        };
+    }
+
+    async function searchPubMed(q) {
+        const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(q)}&retmax=1&retmode=json`;
+        const searchJsonText = await proxyFetch(searchUrl);
+        const sData = JSON.parse(searchJsonText);
+        const id = sData.esearchresult.idlist[0];
+        if(!id) throw new Error("PubMedで論文が見つかりませんでした");
+
+        const detailUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${id}&retmode=xml`;
+        const detailXmlText = await proxyFetch(detailUrl);
+        const xml = new DOMParser().parseFromString(detailXmlText, "text/xml");
+        
+        return { 
+            title: xml.querySelector("ArticleTitle").textContent, 
+            abstract: xml.querySelector("AbstractText").textContent, 
+            url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`, 
+            source: "PubMed (Medical)" 
+        };
+    }
+
+    async function getAiResponse(key, paper) {
+        const prompt = `以下の論文についてJSONで返して。
+1. summary: 日本語1文・英語1文のペアで10セット要約
+2. quiz: 4択クイズ1問 (question, options配列, answerインデックス0-3, explanation)
+
+Title: ${paper.title}
+Abstract: ${paper.abstract}
+
+JSON: {"summary": [{"ja":"..","en":".."}], "quiz": {"question": "..", "options": [".."], "answer": 0, "explanation": ".."}}`;
+
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`, {
+            method: 'POST',
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { response_mime_type: "application/json" } })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        return JSON.parse(data.candidates[0].content.parts[0].text);
+    }
+
+    function render(data) {
+        const content = document.getElementById('paper-content');
+        content.classList.remove('hidden');
+        content.innerHTML = `
+            <div style="color:var(--accent); font-size: 0.8rem; margin-bottom:10px;">${data.source} | ${data.date}</div>
+            <h2 style="font-size: 1.2rem; line-height: 1.4;">${data.title}</h2>
+            <hr style="border:0; border-top:1px solid var(--border); margin:15px 0;">
+            ${data.summary.map(s => `<div class="summary-pair"><div>${s.ja}</div><div class="summary-en">${s.en}</div></div>`).join('')}
+            <div style="text-align:center; margin-top:20px;">
+                <a href="${data.url}" target="_blank" style="color:var(--accent); text-decoration:none;">🔗 原文をブラウザで読む</a>
+            </div>
+        `;
+
+        const quizBox = document.getElementById('quiz-container');
+        quizBox.classList.remove('hidden');
+        document.getElementById('quiz-question').innerText = data.quiz.question;
+        const optionsDiv = document.getElementById('quiz-options');
+        optionsDiv.innerHTML = "";
+        
+        data.quiz.options.forEach((opt, i) => {
+            const btn = document.createElement('div');
+            btn.className = 'quiz-option';
+            btn.innerText = opt;
+            btn.onclick = () => {
+                const feedback = document.getElementById('quiz-feedback');
+                feedback.classList.remove('hidden');
+                const isCorrect = i === data.quiz.answer;
+                feedback.innerHTML = `
+                    <div style="font-size: 1.2rem; margin-bottom:10px;">${isCorrect ? '✅ 正解！' : '❌ 不正解...'}</div>
+                    <div style="font-size: 0.9rem; color:#94a3b8;">${data.quiz.explanation}</div>
+                `;
+                feedback.style.border = isCorrect ? "1px solid var(--correct)" : "1px solid #ef4444";
+            };
+            optionsDiv.appendChild(btn);
+        });
+        document.getElementById('quiz-feedback').classList.add('hidden');
+    }
+</script>
+</body>
+</html>

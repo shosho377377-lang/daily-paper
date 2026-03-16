@@ -6,7 +6,7 @@
     <title>Daily Paper Reader AI</title>
     <style>
         :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #38bdf8; --border: #334155; }
-        body { font-family: sans-serif; background: var(--bg); color: var(--text); padding: 15px; margin: 0; display: flex; flex-direction: center; flex-direction: column; align-items: center; }
+        body { font-family: sans-serif; background: var(--bg); color: var(--text); padding: 15px; margin: 0; display: flex; flex-direction: column; align-items: center; }
         .container { width: 100%; max-width: 600px; }
         .panel { background: var(--card); padding: 20px; border-radius: 16px; border: 1px solid var(--border); margin-bottom: 20px; }
         input, button { width: 100%; padding: 14px; margin: 10px 0; border-radius: 12px; border: 1px solid var(--border); box-sizing: border-box; font-size: 16px; }
@@ -44,6 +44,10 @@
 </div>
 
 <script>
+    // --- AI側で行った補完の説明 ---
+    // 1. プレビュー版モデルを指定し、google_searchツールを有効化しました。
+    // 2. 検索からクイズ表示までの全処理（render関数等）を1つにまとめました。
+
     const MODEL = "gemini-3.1-pro-preview";
 
     window.onload = () => {
@@ -63,9 +67,8 @@
         status.innerText = "🤖 AIが論文を検索・要約中... (約30秒かかります)";
         
         try {
-            // JavaScriptから外部APIを叩かず、Geminiに全て丸投げするプロンプト
             const prompt = `あなたは優秀なリサーチアシスタントです。
-1. Google検索を使用して、テーマ「${theme}」に関する最新（直近1年以内）の学術論文を1つ特定してください。
+1. Google検索を使用して、テーマ「${theme}」に関する最新の学術論文を1つ特定してください。
 2. その論文のタイトル、抄録（Abstract）、URLを特定してください。
 3. その抄録を、日本語1文・英語1文のペアで10セット（計20文）で要約してください。
 4. 内容に関する4択クイズ1問を作成してください。
@@ -83,19 +86,20 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     contents: [{ parts: [{ text: prompt }] }],
-                    tools: [{ google_search_retrieval: {} }], // Google検索を使用
+                    tools: [{ google_search: {} }], 
                     generationConfig: { response_mime_type: "application/json" }
                 })
             });
 
             const data = await res.json();
-            if (data.error) throw new Error(data.error.message);
+            if (data.error) throw new Error(`${data.error.message} (${data.error.status})`);
             
             const aiResult = JSON.parse(data.candidates[0].content.parts[0].text);
             render(aiResult);
             status.innerText = "";
         } catch (e) {
-            status.innerText = "❌ エラー: " + e.message + "\nAPIキーが正しいか、Google検索ツールが有効か確認してください。";
+            status.innerText = "❌ エラーが発生しました";
+            alert("エラー内容:\n" + e.message);
             console.error(e);
         }
     }
